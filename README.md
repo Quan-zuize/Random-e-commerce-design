@@ -1,117 +1,186 @@
 # Spring Cloud Config Example
 
 This project demonstrates Spring Cloud Config with:
-- **demo** service as the Config Server
+- **config-service** as the centralized Config Server
 - **demo-client** service as the Config Client
 
 ## Architecture
 
 ```
-┌─────────────────┐         ┌──────────────────┐         ┌─────────────────┐
-│                 │         │                  │         │                 │
-│  Config Client  │────────▶│  Config Server   │────────▶│  Git Repository │
-│  (demo-client)  │         │     (demo)       │         │  (config-repo)  │
-│   Port: 8081    │         │   Port: 8888     │         │                 │
-└─────────────────┘         └──────────────────┘         └─────────────────┘
+┌─────────────────┐         ┌──────────────────┐         ┌─────────────────────────┐
+│                 │         │                  │         │                         │
+│  Config Client  │────────▶│  Config Server   │────────▶│  Native File System     │
+│  (demo-client)  │         │ (config-service) │         │  (config-repository)    │
+│   Port: 8001    │         │   Port: 8888     │         │  (./config/...)         │
+└─────────────────┘         └──────────────────┘         └─────────────────────────┘
 ```
 
 ## Configuration Structure
 
-### Config Server (demo)
+### Config Server (config-service)
 - **Port**: 8888
-- **Repository**: `C:\Users\quanna2\config-repo`
+- **Storage Type**: Native (File System)
+- **Repository Location**: `./config/config-repository/`
 - **Security**: Basic Auth (admin/admin123)
 - **Annotation**: `@EnableConfigServer`
+- **Spring Boot**: 3.5.7
+- **Spring Cloud**: 2025.0.0
 
-### Config Repository Files
-Located in `C:\Users\quanna2\config-repo`:
-- `demo-client.properties` - Default configuration
-- `demo-client-dev.properties` - Development environment
-- `demo-client-prod.properties` - Production environment
+### Dynamic Search Locations Pattern
+The Config Server uses a flexible search pattern to resolve configurations:
+```yaml
+search-locations:
+  # Common configs based on service name (label): dev, dc, dr, etc.
+  - file:./config/config-repository/common/{label}
+  
+  # Shared configs: redis, rabbit, kafka, db, cache
+  - file:./config/config-repository/{profile}/common/
+  
+  # Service-specific configs
+  - file:./config/config-repository/{profile}/{label}/
+```
+
+**Where**:
+- `{profile}`: Environment (dev, prod, staging, etc.)
+- `{label}`: Service name (demo-client, order-service, etc.)
 
 ### Config Client (demo-client)
-- **Port**: 8081
+- **Port**: 8001
 - **Active Profile**: dev (configurable)
+- **Label**: demo-client (service name)
 - **Features**:
   - Fetches configuration from Config Server
   - `@RefreshScope` for dynamic configuration updates
   - REST endpoints to view current configuration
+  - Can include common configurations
+
+### Config Repository Structure
+Located in `config-service/config/config-repository/`:
+
+```
+config-repository/
+├── dev/                              # Development profile
+│   ├── common/                       # Shared configs for all dev services
+│   │   └── (redis, db, kafka...)    # Future: Shared infrastructure configs
+│   └── demo-client/                  # demo-client service configs
+│       ├── application.yml           # Service-specific application config
+│       └── demo-client.yml           # Service-specific custom config
+│
+└── prod/                             # Production profile
+    ├── common/                       # Shared configs for all prod services
+    │   └── demo-client.yml           # Common production config
+    ├── demo-client/                  # demo-client service configs
+    │   └── demo-client.yml           # Production-specific config
+    └── master/                       # Master branch configs
+        └── demo-client.yml           # Master-specific config
+```
+
+**Configuration Priority** (highest to lowest):
+1. `/{profile}/{label}/{application}.yml` - Service-specific config for profile
+2. `/{profile}/common/{application}.yml` - Common config for profile
+3. `/common/{label}/{application}.yml` - Service-specific common config
 
 ## How to Run
 
 ### Step 1: Start Config Server
 ```cmd
-cd C:\Users\quanna2\Downloads\demo\demo
+cd C:\Users\quanna2\Downloads\demo\config-service
 mvnw spring-boot:run
 ```
 
 The Config Server will start on http://localhost:8888
 
 ### Step 2: Start Config Client
+In your demo-client application, add the following configuration:
+
+**application.yml** or **application.properties**:
+```yaml
+spring:
+  application:
+    name: demo-client
+  profiles:
+    active: dev
+  config:
+    import: "configserver:http://localhost:8888"
+  cloud:
+    config:
+      username: admin
+      password: admin123
+      label: demo-client  # Service name as label
+      profile: dev        # Environment
+```
+
+Then start the client:
 ```cmd
 cd C:\Users\quanna2\Downloads\demo\demo-client
 mvnw spring-boot:run
 ```
 
-The Config Client will start on http://localhost:8081
+The Config Client will start on http://localhost:8001
 
 ## Testing the Configuration
 
-### 1. View Current Configuration
+### 1. Access Config Server Directly
+
+**View dev profile with demo-client label:**
 ```cmd
-curl http://localhost:8081/api/config
-```
-
-Response (with dev profile):
-```json
-{
-  "message": "Hello from Config Server - DEV Environment!",
-  "app.description": "Demo-client DEV environment",
-  "app.version": "1.0.0-DEV",
-  "db.connection.timeout": 60,
-  "db.pool.size": 5,
-  "feature.newUI": true,
-  "feature.betaFeatures": true
-}
-```
-
-### 2. View Message Only
-```cmd
-curl http://localhost:8081/api/message
-```
-
-Response:
-```
-Hello from Config Server - DEV Environment!
-```
-
-### 3. View Feature Flags
-```cmd
-curl http://localhost:8081/api/features
+curl -u admin:admin123 http://localhost:8888/demo-client/dev/demo-client
 ```
 
 Response:
 ```json
 {
-  "newUI": true,
-  "betaFeatures": true
+  "name": "demo-client",
+  "profiles": ["dev"],
+  "label": "demo-client",
+  "propertySources": [
+    {
+      "name": "file:./config/config-repository/dev/demo-client/demo-client.yml",
+      "source": {
+        "server.port": 8001,
+        "management.endpoints.web.exposure.include": "health,info,env,refresh"
+      }
+    },
+    {
+      "name": "file:./config/config-repository/dev/demo-client/application.yml",
+      "source": {
+        "message": "Hello from Config Server - DEV/demo-client!",
+        "app.description": "Demo Client - Development Environment",
+        "app.version": "1.0.0-DEV",
+        "db.connection.timeout": 60,
+        "db.pool.size": 5,
+        "feature.newUI": true,
+        "feature.betaFeatures": true
+      }
+    }
+  ]
 }
 ```
 
-### 4. Access Config Server Directly
-View configuration for demo-client (default profile):
+**View prod profile with demo-client label:**
 ```cmd
-curl -u admin:admin123 http://localhost:8888/demo-client/default
+curl -u admin:admin123 http://localhost:8888/demo-client/prod/demo-client
 ```
 
-View configuration for demo-client (dev profile):
+**View specific config file:**
 ```cmd
-curl -u admin:admin123 http://localhost:8888/demo-client/dev
+curl -u admin:admin123 http://localhost:8888/demo-client-dev.yml
 ```
 
-View configuration for demo-client (prod profile):
+### 2. Test Config Client Endpoints
+If your demo-client has REST endpoints:
+
 ```cmd
-curl -u admin:admin123 http://localhost:8888/demo-client/prod
+curl http://localhost:8001/api/config
+curl http://localhost:8001/api/message
+curl http://localhost:8001/actuator/env
+```
+
+### 3. Check Actuator Endpoints
+```cmd
+curl http://localhost:8001/actuator/health
+curl http://localhost:8001/actuator/info
+curl http://localhost:8001/actuator/env
 ```
 
 ## Dynamic Configuration Refresh
@@ -119,27 +188,24 @@ curl -u admin:admin123 http://localhost:8888/demo-client/prod
 ### Update Configuration Without Restart
 
 1. **Modify config file**:
-   Edit `C:\Users\quanna2\config-repo\demo-client-dev.properties`
-   ```properties
-   message=Updated message from Config Server!
+   Edit `config-service/config/config-repository/dev/demo-client/application.yml`
+   ```yaml
+   message: "Updated message from Config Server!"
    ```
 
-2. **Commit changes**:
-   ```cmd
-   cd C:\Users\quanna2\config-repo
-   git add .
-   git commit -m "Update message"
-   ```
+2. **Save the file** (no git commit needed for native backend)
 
 3. **Refresh client configuration**:
    ```cmd
-   curl -X POST http://localhost:8081/actuator/refresh
+   curl -X POST http://localhost:8001/actuator/refresh
    ```
 
 4. **Verify the change**:
    ```cmd
-   curl http://localhost:8081/api/message
+   curl http://localhost:8001/api/message
    ```
+
+**Note**: Since we're using native file system backend, changes take effect immediately without git commits.
 
 ## Switching Profiles
 
